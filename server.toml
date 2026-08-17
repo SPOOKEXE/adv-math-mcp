@@ -1,0 +1,23 @@
+# Launch contract, checked by tests/test_server.py against the served tool schemas.
+[server]
+id = "math"
+command = ["uv", "run", "--project", ".", "python", "-m", "math_mcp.server"]
+transport = "stdio"
+health_check = "tools/list"
+tools = [
+   "parse",
+   "declare",
+   "check_equivalence",
+   "check_derivation",
+   "matrix_grad",
+   "check_grad",
+   "to_code",
+   "shape_check",
+   "define",
+   "list",
+   "audit",
+   "resolve",
+   "fork",
+   "env",
+   "impact",
+]
