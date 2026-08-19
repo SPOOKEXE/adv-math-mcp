@@ -1,6 +1,7 @@
 """The MCP surface.
 
-Fifteen tools over stdio: eight CAS, six contract, one for the environment itself. The handlers are plain functions taking and
+Twenty-two tools over stdio: fifteen CAS, six contract, one for the environment itself. The
+handlers are plain functions taking and
 returning JSON-shaped data, so the suite exercises them directly rather than through a
 subprocess — the transport is not the thing under test, and shelling out makes every test slow
 and flaky.
@@ -21,8 +22,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from .cas.calculus import check_grad, matrix_grad, shape_check, to_code
+from .cas.algebra import simplify as simplify_expr, solve as solve_kinds
+from .cas.analysis import calc
+from .cas.calculus import check_grad, hessian, matrix_grad, shape_check, to_code
 from .cas.equivalence import batch_equivalence, check_derivation, check_equivalence
+from .cas.linalg import linalg
+from .cas.numeric import evaluate
+from .cas.numtheory import numtheory
+from .cas.prob import prob
 from .cas.session import MathError, ParseError, Session, canonical_form, pretty
 from .layout import ROOT_ENV, resolve_root
 from .contract.model import (
@@ -89,15 +96,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "matrix_grad",
-        "description": "Differentiate with an explicit numerator/denominator layout flag.",
+        "description": (
+            "Differentiate with an explicit numerator/denominator layout flag. "
+            "`hessian: true` returns the Hessian instead (scalar expressions; no layout needed)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "expr": {"type": "string"},
                 "wrt": {"type": "array", "items": {"type": "string"}},
                 "layout": {"type": "string", "enum": ["numerator", "denominator"]},
+                "hessian": {"type": "boolean"},
             },
-            "required": ["expr", "wrt", "layout"],
+            "required": ["expr", "wrt"],
         },
     },
     {
@@ -133,6 +144,160 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"spec": {"type": "string"}, "shapes": {"type": "object"}, "dims": {"type": "object"}},
             "required": ["spec", "shapes"],
+        },
+    },
+    {
+        "name": "solve",
+        "description": (
+            "Solve equations, inequalities, systems, diophantine equations, recurrences or ODEs. "
+            "Roots come back substituted and verified. `steps` and `render` (LaTeX) are opt-in."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["equation", "inequality", "system", "diophantine", "recurrence", "ode"],
+                },
+                "exprs": {"type": "array", "items": {"type": "string"}},
+                "wrt": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Unknowns; for recurrence/ode: [function, variable].",
+                },
+                "given": {"type": "object", "description": "Initial conditions, e.g. {\"a(0)\": \"1\"}."},
+                "steps": {"type": "boolean"},
+                "render": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["kind", "exprs"],
+        },
+    },
+    {
+        "name": "simplify",
+        "description": "Run named rewrite strategies and rank candidates by operation count. All candidates are sound rewrites.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expr": {"type": "string"},
+                "strategies": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["auto", "factor", "expand", "cancel", "together", "trig", "radical", "partfrac"],
+                    },
+                },
+                "wrt": {"type": "string", "description": "The variable, where a strategy needs one (partfrac)."},
+                "render": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["expr"],
+        },
+    },
+    {
+        "name": "calc",
+        "description": (
+            "Integrate, take limits, expand series, and evaluate sums/products. Antiderivatives are "
+            "verified by differentiating back; series carry their error term; a limit whose sides disagree says so."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["integrate", "limit", "series", "sum", "product"]},
+                "expr": {"type": "string"},
+                "wrt": {"type": "string"},
+                "bounds": {"type": "array", "items": {"type": "string"}, "description": "[low, high]; makes integrate definite, required for sum/product."},
+                "point": {"type": "string", "description": "Where limit/series expand."},
+                "direction": {"type": "string", "enum": ["+", "-", "both"]},
+                "order": {"type": "integer"},
+                "steps": {"type": "boolean"},
+                "render": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["op", "expr", "wrt"],
+        },
+    },
+    {
+        "name": "linalg",
+        "description": (
+            "Symbolic matrix operations: det, rank, eigen, inverse, nullspace, solve, decompose (LU/QR/cholesky). "
+            "Inverses and solves are verified by multiplying back."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["det", "rank", "eigen", "inverse", "nullspace", "solve", "decompose"]},
+                "matrix": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                "rhs": {"type": "array", "items": {"type": "string"}, "description": "Right-hand side for op=solve."},
+                "method": {"type": "string", "enum": ["LU", "QR", "cholesky"]},
+                "vectors": {"type": "boolean", "description": "op=eigen: include eigenvectors."},
+                "render": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["op", "matrix"],
+        },
+    },
+    {
+        "name": "numtheory",
+        "description": (
+            "Integer operations: factorint, gcd, lcm, is_prime (composite answers carry a factor witness), "
+            "totient, mod_inverse, crt over [residue, modulus] pairs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["factorint", "gcd", "lcm", "is_prime", "totient", "mod_inverse", "crt"]},
+                "values": {"type": "array", "items": {"type": "string"}},
+                "modulus": {"type": "string"},
+                "pairs": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "op=crt: [[residue, modulus], ...]."},
+                "timeout": {"type": "number"},
+            },
+            "required": ["op"],
+        },
+    },
+    {
+        "name": "prob",
+        "description": (
+            "Distributions with symbolic parameters: expectation, variance, pdf, cdf, probability of a "
+            "condition, and KL divergence. Families: normal, uniform, bernoulli, binomial, poisson, exponential, beta, gamma."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["expectation", "variance", "pdf", "cdf", "probability", "kl"]},
+                "family": {"type": "string"},
+                "params": {"type": "object"},
+                "expr": {"type": "string", "description": "Expression in the variable name, e.g. `X**2`."},
+                "at": {"type": "string", "description": "Evaluation point for pdf/cdf."},
+                "condition": {"type": "string", "description": "op=probability: a comparison like `X > 1`."},
+                "other": {"type": "object", "description": "op=kl: {family, params} of the second distribution."},
+                "name": {"type": "string"},
+                "render": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["op", "family", "params"],
+        },
+    },
+    {
+        "name": "eval",
+        "description": (
+            "Numeric work: arbitrary-precision evalf, root finding from a start point, empirical bounds over a "
+            "box (labelled empirical, never a proof), and convexity (proved symbolically or refuted with a witness point)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["evalf", "root", "bounds", "convexity"]},
+                "expr": {"type": "string"},
+                "at": {"type": "object", "description": "Substitutions for evalf."},
+                "digits": {"type": "integer"},
+                "start": {"type": "object", "description": "op=root: initial guess per variable."},
+                "box": {"type": "object", "description": "Interval per variable, e.g. {\"x\": [-1, 1]}."},
+                "wrt": {"type": "array", "items": {"type": "string"}},
+                "samples": {"type": "integer"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["op", "expr"],
         },
     },
     {
@@ -290,7 +455,9 @@ class MathServer:
         return check_derivation(self.session, args["steps"], timeout=args.get("timeout", 5.0)).to_dict()
 
     def matrix_grad(self, args: dict[str, Any]) -> dict[str, Any]:
-        return matrix_grad(self.session, args["expr"], args["wrt"], layout=args["layout"]).to_dict()
+        if args.get("hessian"):
+            return hessian(self.session, args["expr"], args["wrt"])
+        return matrix_grad(self.session, args["expr"], args["wrt"], layout=args.get("layout")).to_dict()
 
     def check_grad(self, args: dict[str, Any]) -> dict[str, Any]:
         return check_grad(self.session, args["expr"], args["claimed"], args["wrt"]).to_dict()
@@ -302,6 +469,94 @@ class MathServer:
 
     def shape_check(self, args: dict[str, Any]) -> dict[str, Any]:
         return shape_check(args["spec"], args["shapes"], args.get("dims")).to_dict()
+
+    def solve(self, args: dict[str, Any]) -> dict[str, Any]:
+        return solve_kinds(
+            self.session,
+            args["kind"],
+            args["exprs"],
+            args.get("wrt"),
+            given=args.get("given"),
+            timeout=args.get("timeout", 5.0),
+            steps=args.get("steps", False),
+            render=args.get("render", False),
+        ).to_dict()
+
+    def simplify(self, args: dict[str, Any]) -> dict[str, Any]:
+        return simplify_expr(
+            self.session,
+            args["expr"],
+            args.get("strategies"),
+            args.get("wrt"),
+            timeout=args.get("timeout", 5.0),
+            render=args.get("render", False),
+        ).to_dict()
+
+    def calc(self, args: dict[str, Any]) -> dict[str, Any]:
+        return calc(
+            self.session,
+            args["op"],
+            args["expr"],
+            args["wrt"],
+            bounds=args.get("bounds"),
+            point=args.get("point"),
+            direction=args.get("direction", "both"),
+            order=args.get("order", 6),
+            timeout=args.get("timeout", 10.0),
+            steps=args.get("steps", False),
+            render=args.get("render", False),
+        ).to_dict()
+
+    def linalg(self, args: dict[str, Any]) -> dict[str, Any]:
+        return linalg(
+            self.session,
+            args["op"],
+            args["matrix"],
+            rhs=args.get("rhs"),
+            method=args.get("method", "LU"),
+            vectors=args.get("vectors", False),
+            timeout=args.get("timeout", 10.0),
+            render=args.get("render", False),
+        )
+
+    def numtheory(self, args: dict[str, Any]) -> dict[str, Any]:
+        return numtheory(
+            self.session,
+            args["op"],
+            args.get("values"),
+            modulus=args.get("modulus"),
+            pairs=args.get("pairs"),
+            timeout=args.get("timeout", 10.0),
+        )
+
+    def prob(self, args: dict[str, Any]) -> dict[str, Any]:
+        return prob(
+            self.session,
+            args["op"],
+            args["family"],
+            args["params"],
+            expr=args.get("expr"),
+            at=args.get("at"),
+            condition=args.get("condition"),
+            other=args.get("other"),
+            name=args.get("name", "X"),
+            timeout=args.get("timeout", 10.0),
+            render=args.get("render", False),
+        )
+
+    def eval(self, args: dict[str, Any]) -> dict[str, Any]:
+        return evaluate(
+            self.session,
+            args["op"],
+            args["expr"],
+            at=args.get("at"),
+            digits=args.get("digits", 30),
+            start=args.get("start"),
+            box=args.get("box"),
+            wrt=args.get("wrt"),
+            samples=args.get("samples", 200),
+            timeout=args.get("timeout", 10.0),
+        )
 
     # -- contract -------------------------------------------------------------
 
@@ -545,6 +800,13 @@ class MathServer:
             "check_grad": self.check_grad,
             "to_code": self.to_code,
             "shape_check": self.shape_check,
+            "solve": self.solve,
+            "simplify": self.simplify,
+            "calc": self.calc,
+            "linalg": self.linalg,
+            "numtheory": self.numtheory,
+            "prob": self.prob,
+            "eval": self.eval,
             "define": self.define,
             "list": self.list,
             "audit": self.audit,

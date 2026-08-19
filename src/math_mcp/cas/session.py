@@ -224,8 +224,16 @@ class Session:
 
     # -- parsing ---------------------------------------------------------------
 
-    def parse(self, text: str, *, syntax: str = "auto") -> tuple[str, sympy.Expr]:
-        """Parse to a handle. ``syntax`` is ``auto`` | ``latex`` | ``ascii``."""
+    def parse(
+        self, text: str, *, syntax: str = "auto", functions: tuple[str, ...] = ()
+    ) -> tuple[str, sympy.Expr]:
+        """Parse to a handle. ``syntax`` is ``auto`` | ``latex`` | ``ascii``.
+
+        ``functions`` names undefined functions (``a`` in a recurrence ``a(n+1) = 2*a(n)``,
+        ``f`` in an ODE) that should parse as applications rather than be refused. An explicit
+        allowlist per call, not an open namespace: the caller says which names are functions,
+        and everything else stays a symbol or a refusal.
+        """
         source = text
         if syntax == "latex" or (syntax == "auto" and "\\" in text):
             text = _latex_to_ascii(text)
@@ -237,6 +245,7 @@ class Session:
 
         namespace: dict[str, Any] = dict(ALLOWED_FUNCTIONS)
         namespace.update(self._symbols)
+        namespace.update({name: sympy.Function(name) for name in functions})
 
         try:
             expr = parse_expr(
@@ -316,6 +325,15 @@ def canonical_hash(expr: sympy.Expr) -> str:
     import hashlib
 
     return hashlib.sha256(sympy.srepr(canonical_form(expr)).encode()).hexdigest()[:16]
+
+
+def render_expr(expr: sympy.Expr) -> dict[str, str]:
+    """The human face of a result: LaTeX for documents, plain text for terminals.
+
+    Off by default at every call site, because agent turns should not pay for typesetting they
+    will never show anyone. Produced here in one place so every tool renders the same way.
+    """
+    return {"latex": sympy.latex(expr), "text": sympy.sstr(expr)}
 
 
 def pretty(expr: sympy.Expr, limit: int = 120) -> str:

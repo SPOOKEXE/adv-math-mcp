@@ -38,6 +38,15 @@ VARIABLES: tuple[Variable, ...] = (
     Variable("activation_bytes", "activation memory for one batch", "integer", status="derived", units="bytes"),
     Variable("kv_cache_bytes", "KV cache for one batch", "integer", status="derived", units="bytes"),
     Variable("bytes_per_elem", "bytes per stored element", "integer", status="hyperparameter", units="bytes"),
+    # 16 = four Adam-family states in fp32. Named rather than inlined, because a naked `16`
+    # added to bytes hides its bytes-per-parameter units; the units audit rightly objects.
+    Variable(
+        "opt_bytes_per_param",
+        "optimiser and weight bytes per parameter",
+        "integer",
+        status="hyperparameter",
+        units="bytes/parameters",
+    ),
     Variable("peak_memory", "peak device memory", "integer", status="derived", units="bytes"),
     Variable("device_flops", "accelerator peak FLOPs per second", "real", status="hyperparameter", units="flops/s"),
     Variable("mfu", "model FLOPs utilisation", "real", status="hyperparameter"),
@@ -84,10 +93,11 @@ FORMULAS: tuple[Formula, ...] = (
         "kv_cache_bytes = 2 * batch_seqs * seq_len * n_layers * d_model * bytes_per_elem",
         provenance="standard",
     ),
+    Formula("opt-bytes", "definition", "opt_bytes_per_param = 16", provenance="Adam: 4 states, 4 bytes each"),
     Formula(
         "peak-memory",
         "derived",
-        "peak_memory = activation_bytes + kv_cache_bytes + 16 * n_params",
+        "peak_memory = activation_bytes + kv_cache_bytes + opt_bytes_per_param * n_params",
         validity=("Adam states in fp32",),
         provenance="derived here",
     ),

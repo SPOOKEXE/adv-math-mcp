@@ -328,3 +328,53 @@ class TestEnvironment:
             env.env({"action": "save", "name": "doomed"})
 
         assert env.env({"action": "list"})["saved"] == []
+
+
+class TestDomainTools:
+    """The seven new doors dispatch, and the shared flags behave the same on each."""
+
+    def test_solve_dispatches_and_verifies(self, server: MathServer) -> None:
+        result = server.call("solve", {"kind": "equation", "exprs": ["x**2 = 4"], "wrt": ["x"]})
+        assert {entry["x"] for entry in result["solutions"]} == {"-2", "2"}
+        assert result["verified"] == ["proved", "proved"]
+
+    def test_render_is_opt_in_and_returns_latex(self, server: MathServer) -> None:
+        plain = server.call("simplify", {"expr": "x**2 + 2*x + 1"})
+        assert "render" not in plain
+        rendered = server.call("simplify", {"expr": "x**2 + 2*x + 1", "render": True})
+        assert rendered["render"]["latex"] == r"\left(x + 1\right)^{2}"
+
+    def test_calc_integrate_travels_with_its_verdict(self, server: MathServer) -> None:
+        result = server.call("calc", {"op": "integrate", "expr": "cos(x)", "wrt": "x"})
+        assert result["pretty"] == "sin(x)"
+        assert result["verified"] == "proved"
+
+    def test_matrix_grad_grows_a_hessian(self, server: MathServer) -> None:
+        result = server.call("matrix_grad", {"expr": "x**2 + x*y", "wrt": ["x", "y"], "hessian": True})
+        assert result["hessian"] is True
+        assert result["shape"] == [2, 2]
+
+    def test_the_jacobian_path_still_demands_a_layout(self, server: MathServer) -> None:
+        # `hessian: true` relaxed the schema, not the rule: a first-order derivative without a
+        # layout is still never safe to guess.
+        result = server.call("matrix_grad", {"expr": "x**2", "wrt": ["x"]})
+        assert result["error"] == "MathError"
+        assert "never safe to guess" in result["message"]
+
+    def test_linalg_numtheory_prob_eval_dispatch(self, server: MathServer) -> None:
+        assert server.call("linalg", {"op": "det", "matrix": [["1", "2"], ["3", "4"]]})["det"] == "-2"
+        assert server.call("numtheory", {"op": "is_prime", "values": ["97"]})["is_prime"] is True
+        assert (
+            server.call(
+                "prob",
+                {"op": "probability", "family": "normal", "params": {"mean": "0", "std": "1"}, "condition": "X > 0"},
+            )["pretty"]
+            == "1/2"
+        )
+        assert server.call("eval", {"op": "evalf", "expr": "E", "digits": 10})["value"].startswith("2.718281828")
+
+    def test_solved_expressions_share_the_session_with_every_other_tool(self, server: MathServer) -> None:
+        # One workspace: a handle minted by `calc` is a first-class citizen of `check_equivalence`.
+        handle = server.call("calc", {"op": "integrate", "expr": "2*x", "wrt": "x"})["expr_id"]
+        verdict = server.call("check_equivalence", {"left": handle, "right": "x**2"})["verdict"]
+        assert verdict == "proved"

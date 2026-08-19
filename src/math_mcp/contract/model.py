@@ -326,7 +326,7 @@ class Scope:
 
 @dataclass
 class OrphanReport:
-    """Six classes, because "orphan" is six different problems with six different fixes."""
+    """Seven classes, because "orphan" is seven different problems with seven different fixes."""
 
     undefined: list[str] = field(default_factory=list)
     unused: list[str] = field(default_factory=list)
@@ -334,6 +334,9 @@ class OrphanReport:
     unverified: list[str] = field(default_factory=list)
     shadowed: list[dict[str, Any]] = field(default_factory=list)
     dangling: list[str] = field(default_factory=list)
+    #: Approximations carrying no error term. Not wrong yet, just unbounded, which is how a
+    #: chain of them becomes wrong without any single step being at fault.
+    unbounded: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -343,6 +346,7 @@ class OrphanReport:
             "unverified": self.unverified,
             "shadowed": self.shadowed,
             "dangling": self.dangling,
+            "unbounded": self.unbounded,
         }
 
 
@@ -363,6 +367,9 @@ def find_orphans(scope: Scope, *, roots: Iterable[str] = ()) -> OrphanReport:
     report.unused = sorted(name for name in scope.variables if name not in mentioned)
     report.unverified = sorted(
         formula.id for formula in scope.formulas.values() if formula.status in ("unverified", "stale")
+    )
+    report.unbounded = sorted(
+        formula.id for formula in scope.formulas.values() if formula.is_approximation and not formula.error_term
     )
     # An assumption a formula claims that does not exist.
     report.dangling = sorted(
@@ -606,6 +613,34 @@ def audit(scope: Scope, *, samples: int = 12, seed: int = 20260810, roots: Itera
                             f"`{name}` and `{other_name}` are aliases but carry different units",
                         )
                     )
+
+    # Tier 1b: dimensional analysis over the units the variables already carry, plus a parse
+    # check on every claimed error term: an error term that does not parse bounds nothing.
+    from .units import unit_witnesses
+
+    for finding in unit_witnesses(scope):
+        report.witnesses.append(Witness("units", finding["formulas"], {}, finding["values"], finding["detail"]))
+
+    for formula_id, formula in sorted(scope.formulas.items()):
+        if not (formula.is_approximation and formula.error_term):
+            continue
+        # Only O(...) is held to being parseable: that spelling claims a mathematical bound.
+        # Anything else is prose ("MFU varies 10-20% with parallelism"), which is a legitimate
+        # error statement for an empirical fit and not something a parser gets a vote on.
+        text = formula.error_term.strip()
+        if text.startswith("O(") and text.endswith(")"):
+            try:
+                scope._parse(text[2:-1])
+            except MathError as error:
+                report.witnesses.append(
+                    Witness(
+                        "error-term",
+                        [formula_id],
+                        {},
+                        {formula_id: formula.error_term},
+                        f"`{formula_id}` claims an O(...) error term that does not parse: {error}",
+                    )
+                )
 
     # Tier 3: probe. Solve each definition for its matched variable and compare where two
     # relations claim the same quantity.

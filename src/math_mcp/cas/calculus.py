@@ -59,6 +59,26 @@ def matrix_grad(session: Session, expr: str, wrt: list[str], *, layout: Layout) 
     return GradResult(layout, tuple(result.shape), session.store(result), pretty(result))
 
 
+def hessian(session: Session, expr: str, wrt: list[str]) -> dict[str, Any]:
+    """Second-order: the Hessian of a scalar expression.
+
+    No layout flag, deliberately: for a twice-differentiable scalar the Hessian is symmetric,
+    so numerator and denominator layout coincide and demanding a choice would imply a
+    distinction that does not exist.
+    """
+    value = session.resolve(expr)
+    if isinstance(value, sympy.MatrixBase):
+        raise MathError("the Hessian is defined for a scalar expression; this one is a matrix")
+    symbols = [session.symbol(name) for name in wrt]
+    matrix = sympy.hessian(value, symbols)
+    return {
+        "hessian": True,
+        "shape": list(matrix.shape),
+        "expr_id": session.store(matrix),
+        "pretty": pretty(matrix),
+    }
+
+
 @dataclass
 class GradCheckResult:
     ok: bool

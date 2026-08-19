@@ -339,3 +339,12 @@ class TestShapeCheck:
             {"batch": 32, "d_ff": 2048},
         )
         assert result.output_shape == ["32", "2048"]
+
+
+class TestHessian:
+    def test_the_hessian_of_a_matrix_expression_is_refused(self) -> None:
+        from math_mcp.cas.calculus import hessian
+
+        session = Session()
+        with pytest.raises(MathError, match="scalar"):
+            hessian(session, "Matrix([x, y])", ["x", "y"])
