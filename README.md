@@ -41,3 +41,71 @@ uv run pytest
 
 `server.toml` is the launch contract; its tool list is checked against the served schemas by
 the test suite.
+
+## Add to a client
+
+Every example runs the same command:
+
+```sh
+uv run --directory /path/to/adv-math-mcp python -m math_mcp.server
+```
+
+`uv` resolves and syncs `uv.lock` on launch, so there is no venv to activate and no install
+step. Use `--directory` with an absolute path rather than the `--project .` in `server.toml`:
+clients spawn the server from their own working directory, which is rarely this repo.
+
+**Claude Code**
+
+```sh
+claude mcp add math -- uv run --directory /path/to/adv-math-mcp python -m math_mcp.server
+```
+
+Add `--scope project` to write `.mcp.json` in the current repo instead of user config.
+
+**Codex** (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.math]
+command = "uv"
+args = ["run", "--directory", "/path/to/adv-math-mcp", "python", "-m", "math_mcp.server"]
+```
+
+**Claude Desktop** (`claude_desktop_config.json`), **Cursor** (`.cursor/mcp.json`), **Gemini
+CLI** (`~/.gemini/settings.json`), and anything else taking the `mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "math": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/adv-math-mcp", "python", "-m", "math_mcp.server"]
+    }
+  }
+}
+```
+
+**VS Code** (`.vscode/mcp.json`) uses `servers` and wants an explicit transport:
+
+```json
+{
+  "servers": {
+    "math": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/adv-math-mcp", "python", "-m", "math_mcp.server"]
+    }
+  }
+}
+```
+
+On Windows, escape the path in JSON as `C:\\path\\to\\adv-math-mcp`, and give `uv` its full
+path if it is not on the launcher's `PATH`.
+
+To confirm the server answers before wiring it into a client:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
+  | uv run --directory /path/to/adv-math-mcp python -m math_mcp.server
+```
+
+A `serverInfo` line naming `math` means the launch contract holds.
