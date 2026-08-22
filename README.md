@@ -21,10 +21,13 @@ result resting on an assumption relaxed three steps ago.
 
 ## Tools
 
-CAS: `parse`, `declare`, `check_equivalence`, `check_derivation`, `matrix_grad` (with
-`hessian: true`), `check_grad`, `to_code`, `shape_check`, `solve` (equation, inequality, system,
-diophantine, recurrence, ode), `simplify`, `calc` (integrate, limit, series, sum, product),
-`linalg`, `numtheory`, `prob`, `eval` (evalf, root, bounds, convexity).
+CAS and planning: `parse`, `declare`, `check_equivalence`, `check_derivation`, `matrix_grad` (with
+`hessian: true`), `check_grad`, `to_code`, `shape_check`, `tensor_plan` (contractions, streaming,
+checkpointing, liveness and roofline costs), `analyze` (stability, certified bounds, complexity,
+error budgets and optimization), `solve` (equation, inequality, system, diophantine, recurrence,
+ode), `simplify`, `calc` (integrate, limit, series, sum, product), `linalg` (including SVD,
+conditioning and structure), `numtheory`, `prob`, `eval` (evalf, root, empirical bounds,
+convexity).
 
 Contract: `define`, `list`, `audit` (shapes, units, orphans, numeric probes), `resolve`,
 `fork`, `impact`. Plus `env` to save and load whole environments.
@@ -32,12 +35,21 @@ Contract: `define`, `list`, `audit` (shapes, units, orphans, numeric probes), `r
 `render: true` on the symbolic tools adds LaTeX output; `steps: true` on `solve` and `calc`
 adds checkpoint traces. Both are off by default so agent turns stay cheap.
 
+`tensor_plan` never allocates tensors at the requested sizes. It distinguishes resident input and
+output bytes, materialised intermediates, fast-memory tile workspace, slow-memory traffic and
+FLOPs, then returns non-dominated schedules. See [Tensor planning](docs/tensor-planning.md) for the
+request format, supported operations and exactness limits.
+
 ## Run
 
 ```sh
 uv run python -m math_mcp.server
 uv run pytest
 ```
+
+The test command uses two `pytest-xdist` workers by default. This keeps the symbolic timeout cases
+isolated and avoids the CPU oversubscription that `-n auto` can cause. Use `-n 0` for a serial
+debugging run.
 
 `server.toml` is the launch contract; its tool list is checked against the served schemas by
 the test suite.

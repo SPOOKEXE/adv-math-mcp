@@ -89,10 +89,7 @@ class TestCasTools:
         assert server.call("check_equivalence", {"left": "sqrt(x**2)", "right": "x"})["verdict"] == "proved"
 
     def test_a_batch_comes_back_indexed(self, server: MathServer) -> None:
-        result = server.call(
-            "check_equivalence",
-            {"pairs": [["(x+1)**2", "x**2+2*x+1"], ["x", "x+1"]]},
-        )
+        result = server.call("check_equivalence", {"pairs": [["(x+1)**2", "x**2+2*x+1"], ["x", "x+1"]]})
         assert [entry["index"] for entry in result["results"]] == [0, 1]
         assert [entry["verdict"] for entry in result["results"]] == ["proved", "disproved"]
 
@@ -106,9 +103,7 @@ class TestCasTools:
         assert result["shape"] == [2, 2]
 
     def test_check_grad_rejects_a_wrong_gradient(self, server: MathServer) -> None:
-        result = server.call(
-            "check_grad", {"expr": "x**2 * y", "claimed": "Matrix([2*x*y, -x**2])", "wrt": ["x", "y"]}
-        )
+        result = server.call("check_grad", {"expr": "x**2 * y", "claimed": "Matrix([2*x*y, -x**2])", "wrt": ["x", "y"]})
         assert result["ok"] is False
 
     def test_to_code_returns_source_and_the_op_counts(self, server: MathServer) -> None:
@@ -117,12 +112,28 @@ class TestCasTools:
         assert result["operations_after"] < result["operations_before"]
 
     def test_shape_check_names_the_axis(self, server: MathServer) -> None:
-        result = server.call(
-            "shape_check",
-            {"spec": "bd,bd->b", "shapes": {"a": ["batch", "d"], "z": ["beams", "d"]}},
-        )
+        result = server.call("shape_check", {"spec": "bd,bd->b", "shapes": {"a": ["batch", "d"], "z": ["beams", "d"]}})
         assert result["ok"] is False
         assert result["axis"] == "b"
+
+    def test_tensor_plan_crosses_the_server_boundary(self, server: MathServer) -> None:
+        result = server.call(
+            "tensor_plan",
+            {
+                "kind": "contraction",
+                "spec": "mk,kn->mn",
+                "inputs": ["a", "b"],
+                "tensors": {"a": {"shape": [4, 8]}, "b": {"shape": [8, 2]}},
+                "memory": {"fast_bytes": 1024},
+            },
+        )
+        assert result["status"] == "feasible"
+        assert result["operations"][0]["flops"] == 128
+
+    def test_analyze_crosses_the_server_boundary(self, server: MathServer) -> None:
+        result = server.call("analyze", {"op": "rigorous_bounds", "expr": "x**2", "box": {"x": [-1, 2]}})
+        assert result["verdict"] == "proved"
+        assert result["enclosure"]["upper"] == "4"
 
 
 class TestContractTools:
@@ -131,19 +142,13 @@ class TestContractTools:
         return server
 
     def test_define_auto_registers_and_reports_it(self, server: MathServer) -> None:
-        result = server.call(
-            "define",
-            {"noun": "formula", "body": {"id": "f1", "expression": "energy = mass * c**2"}},
-        )
+        result = server.call("define", {"noun": "formula", "body": {"id": "f1", "expression": "energy = mass * c**2"}})
         assert set(result["auto_registered"]) == {"energy", "mass", "c"}
 
     def test_define_covers_all_three_nouns(self, server: MathServer) -> None:
         assert server.call("define", {"noun": "variable", "body": {"name": "x"}})["defined"] == "variable"
         assert server.call("define", {"noun": "formula", "body": {"id": "f", "expression": "y = x"}})["defined"] == "formula"
-        assert (
-            server.call("define", {"noun": "assumption", "body": {"id": "a", "statement": "x > 0"}})["defined"]
-            == "assumption"
-        )
+        assert server.call("define", {"noun": "assumption", "body": {"id": "a", "statement": "x > 0"}})["defined"] == "assumption"
 
     def test_an_unknown_noun_is_named(self, server: MathServer) -> None:
         assert "unknown noun" in server.call("define", {"noun": "theorem", "body": {}})["message"]
@@ -365,10 +370,9 @@ class TestDomainTools:
         assert server.call("linalg", {"op": "det", "matrix": [["1", "2"], ["3", "4"]]})["det"] == "-2"
         assert server.call("numtheory", {"op": "is_prime", "values": ["97"]})["is_prime"] is True
         assert (
-            server.call(
-                "prob",
-                {"op": "probability", "family": "normal", "params": {"mean": "0", "std": "1"}, "condition": "X > 0"},
-            )["pretty"]
+            server.call("prob", {"op": "probability", "family": "normal", "params": {"mean": "0", "std": "1"}, "condition": "X > 0"})[
+                "pretty"
+            ]
             == "1/2"
         )
         assert server.call("eval", {"op": "evalf", "expr": "E", "digits": 10})["value"].startswith("2.718281828")

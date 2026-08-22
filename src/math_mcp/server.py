@@ -1,6 +1,6 @@
 """The MCP surface.
 
-Twenty-two tools over stdio: fifteen CAS, six contract, one for the environment itself. The
+Twenty-four tools over stdio: seventeen CAS/planning, six contract, one for the environment. The
 handlers are plain functions taking and
 returning JSON-shaped data, so the suite exercises them directly rather than through a
 subprocess — the transport is not the thing under test, and shelling out makes every test slow
@@ -18,20 +18,22 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .cas.algebra import simplify as simplify_expr, solve as solve_kinds
+from .cas.algebra import simplify as simplify_expr
+from .cas.algebra import solve as solve_kinds
 from .cas.analysis import calc
 from .cas.calculus import check_grad, hessian, matrix_grad, shape_check, to_code
 from .cas.equivalence import batch_equivalence, check_derivation, check_equivalence
+from .cas.insight import analyze
 from .cas.linalg import linalg
 from .cas.numeric import evaluate
 from .cas.numtheory import numtheory
 from .cas.prob import prob
 from .cas.session import MathError, ParseError, Session, canonical_form, pretty
-from .layout import ROOT_ENV, resolve_root
+from .cas.tensor import tensor_plan
 from .contract.model import (
     Assumption,
     ContractError,
@@ -45,6 +47,7 @@ from .contract.model import (
     relax,
     resolve,
 )
+from .layout import ROOT_ENV, resolve_root
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -55,10 +58,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": "Parse LaTeX/ASCII/SymPy into an opaque expr_id handle. Parse errors carry line and column.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "syntax": {"type": "string", "enum": ["auto", "latex", "ascii"]},
-            },
+            "properties": {"text": {"type": "string"}, "syntax": {"type": "string", "enum": ["auto", "latex", "ascii"]}},
             "required": ["text"],
         },
     },
@@ -147,6 +147,60 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "tensor_plan",
+        "description": (
+            "Plan tensor contractions, streaming pipelines and activation checkpointing without allocating the tensors. "
+            "Returns named-shape checks, peak live bytes, traffic/FLOPs, legal tiles and a memory/traffic Pareto frontier."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["contraction", "pipeline", "checkpoint"]},
+                "spec": {"type": "string", "description": "For kind=contraction, e.g. mk,kn->mn."},
+                "inputs": {"type": "array", "items": {"type": "string"}},
+                "tensors": {"type": "object", "description": "Tensor name to {shape, axes?, dtype?}. Shapes may use names from dims."},
+                "dims": {"type": "object", "description": "Named positive integer dimensions."},
+                "ops": {"type": "array", "items": {"type": "object"}},
+                "outputs": {"type": "array", "items": {"type": "string"}},
+                "dtype": {"type": "string"},
+                "memory": {"type": "object", "description": "{fast_bytes, slow_bytes?}."},
+                "hardware": {"type": "object", "description": "Optional {peak_flops, bandwidth_bytes_per_s} roofline model."},
+                "memory_budget": {"type": "integer", "description": "Shorthand for memory.fast_bytes."},
+                "output": {"type": "object", "description": "{mode: materialize|stream}."},
+                "semantics": {"type": "object", "description": "{mode: real_exact|floating_equivalent|bitwise_same|approximate}."},
+                "allowed": {"type": "array", "items": {"type": "string"}},
+                "tile_alignment": {"type": "integer"},
+                "max_candidates": {"type": "integer"},
+                "max_plans": {"type": "integer"},
+                "backward": {"type": "boolean"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["tensors"],
+        },
+    },
+    {
+        "name": "analyze",
+        "description": (
+            "Analyze scalar numerical stability, prove interval enclosures, count expression complexity, "
+            "propagate first-order error budgets, or optimize exactly over a univariate box."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["stability", "rigorous_bounds", "complexity", "error_budget", "optimize"]},
+                "expr": {"type": "string"},
+                "wrt": {"type": "array", "items": {"type": "string"}},
+                "box": {"type": "object", "description": "Closed interval per variable."},
+                "at": {"type": "object", "description": "Point substitutions."},
+                "errors": {"type": "object", "description": "Absolute error per input variable."},
+                "goal": {"type": "string", "enum": ["min", "max", "both"]},
+                "timeout": {"type": "number"},
+                "render": {"type": "boolean"},
+            },
+            "required": ["op", "expr"],
+        },
+    },
+    {
         "name": "solve",
         "description": (
             "Solve equations, inequalities, systems, diophantine equations, recurrences or ODEs. "
@@ -155,17 +209,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "kind": {
-                    "type": "string",
-                    "enum": ["equation", "inequality", "system", "diophantine", "recurrence", "ode"],
-                },
+                "kind": {"type": "string", "enum": ["equation", "inequality", "system", "diophantine", "recurrence", "ode"]},
                 "exprs": {"type": "array", "items": {"type": "string"}},
-                "wrt": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Unknowns; for recurrence/ode: [function, variable].",
-                },
-                "given": {"type": "object", "description": "Initial conditions, e.g. {\"a(0)\": \"1\"}."},
+                "wrt": {"type": "array", "items": {"type": "string"}, "description": "Unknowns; for recurrence/ode: [function, variable]."},
+                "given": {"type": "object", "description": 'Initial conditions, e.g. {"a(0)": "1"}.'},
                 "steps": {"type": "boolean"},
                 "render": {"type": "boolean"},
                 "timeout": {"type": "number"},
@@ -182,10 +229,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "expr": {"type": "string"},
                 "strategies": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["auto", "factor", "expand", "cancel", "together", "trig", "radical", "partfrac"],
-                    },
+                    "items": {"type": "string", "enum": ["auto", "factor", "expand", "cancel", "together", "trig", "radical", "partfrac"]},
                 },
                 "wrt": {"type": "string", "description": "The variable, where a strategy needs one (partfrac)."},
                 "render": {"type": "boolean"},
@@ -206,7 +250,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "op": {"type": "string", "enum": ["integrate", "limit", "series", "sum", "product"]},
                 "expr": {"type": "string"},
                 "wrt": {"type": "string"},
-                "bounds": {"type": "array", "items": {"type": "string"}, "description": "[low, high]; makes integrate definite, required for sum/product."},
+                "bounds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "[low, high]; makes integrate definite, required for sum/product.",
+                },
                 "point": {"type": "string", "description": "Where limit/series expand."},
                 "direction": {"type": "string", "enum": ["+", "-", "both"]},
                 "order": {"type": "integer"},
@@ -220,17 +268,21 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "linalg",
         "description": (
-            "Symbolic matrix operations: det, rank, eigen, inverse, nullspace, solve, decompose (LU/QR/cholesky). "
-            "Inverses and solves are verified by multiplying back."
+            "Symbolic matrix operations: det, rank, eigen, inverse, nullspace, solve, decompose, SVD, condition and structure. "
+            "Inverses, solves and SVDs are verified by multiplying back."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "op": {"type": "string", "enum": ["det", "rank", "eigen", "inverse", "nullspace", "solve", "decompose"]},
+                "op": {
+                    "type": "string",
+                    "enum": ["det", "rank", "eigen", "inverse", "nullspace", "solve", "decompose", "svd", "condition", "structure"],
+                },
                 "matrix": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
                 "rhs": {"type": "array", "items": {"type": "string"}, "description": "Right-hand side for op=solve."},
                 "method": {"type": "string", "enum": ["LU", "QR", "cholesky"]},
                 "vectors": {"type": "boolean", "description": "op=eigen: include eigenvectors."},
+                "tolerance": {"type": "number", "description": "Numerical-rank threshold for op=svd."},
                 "render": {"type": "boolean"},
                 "timeout": {"type": "number"},
             },
@@ -249,7 +301,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "op": {"type": "string", "enum": ["factorint", "gcd", "lcm", "is_prime", "totient", "mod_inverse", "crt"]},
                 "values": {"type": "array", "items": {"type": "string"}},
                 "modulus": {"type": "string"},
-                "pairs": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "op=crt: [[residue, modulus], ...]."},
+                "pairs": {
+                    "type": "array",
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "description": "op=crt: [[residue, modulus], ...].",
+                },
                 "timeout": {"type": "number"},
             },
             "required": ["op"],
@@ -292,7 +348,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "at": {"type": "object", "description": "Substitutions for evalf."},
                 "digits": {"type": "integer"},
                 "start": {"type": "object", "description": "op=root: initial guess per variable."},
-                "box": {"type": "object", "description": "Interval per variable, e.g. {\"x\": [-1, 1]}."},
+                "box": {"type": "object", "description": 'Interval per variable, e.g. {"x": [-1, 1]}.'},
                 "wrt": {"type": "array", "items": {"type": "string"}},
                 "samples": {"type": "integer"},
                 "timeout": {"type": "number"},
@@ -353,11 +409,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": "Fork a scope, or diff two scopes.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "scope": {"type": "string"},
-                "name": {"type": "string"},
-                "diff_against": {"type": "string"},
-            },
+            "properties": {"scope": {"type": "string"}, "name": {"type": "string"}, "diff_against": {"type": "string"}},
         },
     },
     {
@@ -444,11 +496,7 @@ class MathServer:
                 )
             }
         return check_equivalence(
-            self.session,
-            args["left"],
-            args["right"],
-            samples=args.get("samples", 24),
-            timeout=args.get("timeout", 5.0),
+            self.session, args["left"], args["right"], samples=args.get("samples", 24), timeout=args.get("timeout", 5.0)
         ).to_dict()
 
     def check_derivation(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -463,12 +511,27 @@ class MathServer:
         return check_grad(self.session, args["expr"], args["claimed"], args["wrt"]).to_dict()
 
     def to_code(self, args: dict[str, Any]) -> dict[str, Any]:
-        return to_code(
-            self.session, args["expr"], target=args.get("target", "numpy"), name=args.get("name", "f")
-        ).to_dict()
+        return to_code(self.session, args["expr"], target=args.get("target", "numpy"), name=args.get("name", "f")).to_dict()
 
     def shape_check(self, args: dict[str, Any]) -> dict[str, Any]:
         return shape_check(args["spec"], args["shapes"], args.get("dims")).to_dict()
+
+    def tensor_plan(self, args: dict[str, Any]) -> dict[str, Any]:
+        return tensor_plan(args)
+
+    def analyze(self, args: dict[str, Any]) -> dict[str, Any]:
+        return analyze(
+            self.session,
+            args["op"],
+            args["expr"],
+            wrt=args.get("wrt"),
+            box=args.get("box"),
+            at=args.get("at"),
+            errors=args.get("errors"),
+            goal=args.get("goal", "both"),
+            timeout=args.get("timeout", 10.0),
+            render=args.get("render", False),
+        )
 
     def solve(self, args: dict[str, Any]) -> dict[str, Any]:
         return solve_kinds(
@@ -515,6 +578,7 @@ class MathServer:
             rhs=args.get("rhs"),
             method=args.get("method", "LU"),
             vectors=args.get("vectors", False),
+            tolerance=args.get("tolerance", 1e-10),
             timeout=args.get("timeout", 10.0),
             render=args.get("render", False),
         )
@@ -599,10 +663,7 @@ class MathServer:
         if noun == "assumption":
             assumption = scope.define_assumption(
                 Assumption(
-                    id=body["id"],
-                    statement=body["statement"],
-                    provenance=body.get("provenance", ""),
-                    active=body.get("active", True),
+                    id=body["id"], statement=body["statement"], provenance=body.get("provenance", ""), active=body.get("active", True)
                 )
             )
             return {"defined": "assumption", "assumption": assumption.to_dict()}
@@ -615,33 +676,17 @@ class MathServer:
         filters = args.get("filter", {})
         mode = args.get("mode", "summary")
 
-        source: dict[str, Any] = {
-            "variable": scope.variables,
-            "formula": scope.formulas,
-            "assumption": scope.assumptions,
-        }[noun]
+        source: dict[str, Any] = {"variable": scope.variables, "formula": scope.formulas, "assumption": scope.assumptions}[noun]
 
-        entries = [
-            item
-            for item in source.values()
-            if all(getattr(item, key, None) == value for key, value in filters.items())
-        ]
+        entries = [item for item in source.values() if all(getattr(item, key, None) == value for key, value in filters.items())]
 
         if mode == "summary":
             # Dumping 200 relations into context defeats the purpose of having a registry.
-            return {
-                "noun": noun,
-                "count": len(entries),
-                "ids": sorted(getattr(item, "id", getattr(item, "name", "")) for item in entries),
-            }
+            return {"noun": noun, "count": len(entries), "ids": sorted(getattr(item, "id", getattr(item, "name", "")) for item in entries)}
         return {"noun": noun, "count": len(entries), "entries": [item.to_dict() for item in entries]}
 
     def audit(self, args: dict[str, Any]) -> dict[str, Any]:
-        return audit(
-            self.scope(args.get("scope")),
-            samples=args.get("samples", 12),
-            roots=args.get("roots", ()),
-        ).to_dict()
+        return audit(self.scope(args.get("scope")), samples=args.get("samples", 12), roots=args.get("roots", ())).to_dict()
 
     def resolve(self, args: dict[str, Any]) -> dict[str, Any]:
         return resolve(self.scope(args.get("scope")), args["target"], args.get("given")).to_dict()
@@ -670,9 +715,7 @@ class MathServer:
     def _path(self, name: str) -> Path:
         """A name, as a file. Refused rather than sanitised — a sanitised name is a different one."""
         if not ENV_NAME.match(name):
-            raise ContractError(
-                f"`{name}` is not a usable environment name; use letters, digits, `.`, `-` and `_`"
-            )
+            raise ContractError(f"`{name}` is not a usable environment name; use letters, digits, `.`, `-` and `_`")
         return self.root / f"{name}.json"
 
     def env(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -730,12 +773,7 @@ class MathServer:
             staging = path.with_suffix(".json.tmp")
             staging.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             os.replace(staging, path)
-            return {
-                "saved": name,
-                "path": str(path),
-                "scopes": sorted(self.scopes),
-                "symbols": len(payload["declarations"]),
-            }
+            return {"saved": name, "path": str(path), "scopes": sorted(self.scopes), "symbols": len(payload["declarations"])}
 
         if action == "delete":
             path = self._path(str(args.get("name", "")))
@@ -800,6 +838,8 @@ class MathServer:
             "check_grad": self.check_grad,
             "to_code": self.to_code,
             "shape_check": self.shape_check,
+            "tensor_plan": self.tensor_plan,
+            "analyze": self.analyze,
             "solve": self.solve,
             "simplify": self.simplify,
             "calc": self.calc,

@@ -13,6 +13,8 @@ tools = [
    "check_grad",
    "to_code",
    "shape_check",
+   "tensor_plan",
+   "analyze",
    "solve",
    "simplify",
    "calc",

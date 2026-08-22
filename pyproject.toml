@@ -9,11 +9,21 @@ dependencies = ["sympy>=1.13", "mcp>=1.28,<2"]
 numeric = ["numpy>=2.0"]
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-timeout>=2.3", "numpy>=2.0"]
+dev = [
+    "hypothesis>=6.130",
+    "numpy>=2.0",
+    "pytest>=8.3",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.6",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --timeout=120"
+addopts = "-q --timeout=120 --strict-markers -n 2 --dist loadfile"
+markers = [
+    "fuzz: deterministic property-based checks over generated inputs",
+    "sweep: parameter sweeps over dimensions and memory budgets",
+]
 
 [build-system]
 requires = ["hatchling"]

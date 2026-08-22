@@ -113,6 +113,46 @@ class TestMoreOps:
         assert "matrix" in rendered["inverse"]["render"]["latex"]
 
 
+class TestStructureAndConditioning:
+    def test_structure_finds_diagonal_banded_symmetric_and_toeplitz(self, session: Session) -> None:
+        result = linalg(session, "structure", [["2", "0", "0"], ["0", "2", "0"], ["0", "0", "2"]])
+        assert result["diagonal"] == "proved"
+        assert result["symmetric"] == "proved"
+        assert result["toeplitz"] == "proved"
+        assert result["bandwidth"] == {"verdict": "proved", "lower": 0, "upper": 0}
+        assert "diagonal elementwise solve/inverse" in result["suggested_algorithms"]
+
+    def test_structure_finds_an_exact_low_rank_matrix(self, session: Session) -> None:
+        result = linalg(session, "structure", [["1", "2"], ["2", "4"]])
+        assert result["exact_rank"] == 1
+        assert result["low_rank"] == "proved"
+        assert "exact low-rank factorization" in result["suggested_algorithms"]
+
+    def test_structure_distinguishes_false_from_unknown(self, session: Session) -> None:
+        result = linalg(session, "structure", [["1", "x"], ["0", "1"]])
+        assert result["symmetric"] in {"disproved", "unknown"}
+        assert result["unknown_zero_status_entries"] >= 1
+
+    def test_svd_reconstructs_and_reports_numerical_rank(self, session: Session) -> None:
+        result = linalg(session, "svd", [["3", "0"], ["0", "0"]], tolerance=1e-12)
+        assert result["verified"] == "proved"
+        assert result["numerical_rank"] == 1
+        assert result["singular_values"] == ["3", "0"]
+
+    def test_condition_number_comes_from_singular_values(self, session: Session) -> None:
+        result = linalg(session, "condition", [["4", "0"], ["0", "2"]])
+        assert result["condition"] == "2"
+        singular = linalg(session, "condition", [["1", "0"], ["0", "0"]])
+        assert singular["condition"] == "oo"
+        assert singular["ill_conditioned"] == "proved"
+
+    def test_negative_numerical_rank_tolerance_is_refused(self, session: Session) -> None:
+        with pytest.raises(MathError, match="nonnegative"):
+            linalg(session, "svd", [["1"]], tolerance=-1)
+        with pytest.raises(MathError, match="finite"):
+            linalg(session, "svd", [["1"]], tolerance="small")  # type: ignore[arg-type]
+
+
 class TestHonestTimeouts:
     def test_a_hopeless_symbolic_inverse_reports_the_deadline(self, session: Session) -> None:
         # A 7x7 fully symbolic inverse stalls sympy for well over 15s; the 50ms deadline fires
