@@ -23,8 +23,8 @@ that makes the graph worth having — the same relation has to solve for ``x`` g
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 
 @dataclass
@@ -58,6 +58,16 @@ def hopcroft_karp(variables: Iterable[str], relations: dict[str, set[str]]) -> M
     matching = Matching()
     INFINITY = float("inf")
 
+    def augment(variable: str, distance: dict[str, float]) -> bool:
+        for relation in by_variable[variable]:
+            partner = matching.relation_to_variable.get(relation)
+            if partner is None or (distance[partner] == distance[variable] + 1 and augment(partner, distance)):
+                matching.variable_to_relation[variable] = relation
+                matching.relation_to_variable[relation] = variable
+                return True
+        distance[variable] = INFINITY
+        return False
+
     while True:
         # Layer the free variables, then look for augmenting paths of that length.
         distance: dict[str, float] = {}
@@ -85,19 +95,9 @@ def hopcroft_karp(variables: Iterable[str], relations: dict[str, set[str]]) -> M
         if found == INFINITY:
             return matching
 
-        def augment(variable: str) -> bool:
-            for relation in by_variable[variable]:
-                partner = matching.relation_to_variable.get(relation)
-                if partner is None or (distance[partner] == distance[variable] + 1 and augment(partner)):
-                    matching.variable_to_relation[variable] = relation
-                    matching.relation_to_variable[relation] = variable
-                    return True
-            distance[variable] = INFINITY
-            return False
-
         for variable in variable_list:
             if variable not in matching.variable_to_relation:
-                augment(variable)
+                augment(variable, distance)
 
 
 @dataclass

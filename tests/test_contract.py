@@ -6,7 +6,6 @@ import pytest
 
 from math_mcp.contract.graph import dulmage_mendelsohn, hopcroft_karp, tarjan_blocks
 from math_mcp.contract.model import (
-    Assumption,
     ContractError,
     Formula,
     Scope,

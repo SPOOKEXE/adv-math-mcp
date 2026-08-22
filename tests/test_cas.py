@@ -182,9 +182,8 @@ class TestDerivation:
 
 class TestTimeout:
     def test_the_deadline_actually_fires(self) -> None:
-        with pytest.raises(TimeoutExceeded):
-            with deadline(0.05):
-                sympy.integrate(sympy.exp(sympy.Symbol("x") ** 5) * sympy.sin(sympy.Symbol("x") ** 3), sympy.Symbol("x"))
+        with pytest.raises(TimeoutExceeded), deadline(0.05):
+            sympy.integrate(sympy.exp(sympy.Symbol("x") ** 5) * sympy.sin(sympy.Symbol("x") ** 3), sympy.Symbol("x"))
 
     def test_a_timed_out_check_returns_unknown_rather_than_hanging(self, session: Session) -> None:
         result = check_equivalence(session, "x", "x", timeout=0.0001)

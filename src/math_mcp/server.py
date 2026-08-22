@@ -18,14 +18,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .cas.algebra import simplify as simplify_expr
 from .cas.algebra import solve as solve_kinds
 from .cas.analysis import calc
-from .cas.calculus import check_grad, hessian, matrix_grad, shape_check, to_code
+from .cas.calculus import Layout, check_grad, hessian, matrix_grad, shape_check, to_code
 from .cas.equivalence import batch_equivalence, check_derivation, check_equivalence
 from .cas.insight import analyze
 from .cas.linalg import linalg
@@ -505,7 +505,7 @@ class MathServer:
     def matrix_grad(self, args: dict[str, Any]) -> dict[str, Any]:
         if args.get("hessian"):
             return hessian(self.session, args["expr"], args["wrt"])
-        return matrix_grad(self.session, args["expr"], args["wrt"], layout=args.get("layout")).to_dict()
+        return matrix_grad(self.session, args["expr"], args["wrt"], layout=cast(Layout, args.get("layout"))).to_dict()
 
     def check_grad(self, args: dict[str, Any]) -> dict[str, Any]:
         return check_grad(self.session, args["expr"], args["claimed"], args["wrt"]).to_dict()
@@ -676,7 +676,12 @@ class MathServer:
         filters = args.get("filter", {})
         mode = args.get("mode", "summary")
 
-        source: dict[str, Any] = {"variable": scope.variables, "formula": scope.formulas, "assumption": scope.assumptions}[noun]
+        sources: dict[str, Mapping[str, Any]] = {
+            "variable": scope.variables,
+            "formula": scope.formulas,
+            "assumption": scope.assumptions,
+        }
+        source = sources[noun]
 
         entries = [item for item in source.values() if all(getattr(item, key, None) == value for key, value in filters.items())]
 
@@ -761,10 +766,11 @@ class MathServer:
 
         if action == "save":
             name = str(args.get("name", ""))
+            declarations = self.session.declarations()
             payload = {
                 "format": ENV_FORMAT,
                 "note": str(args.get("note", "")),
-                "declarations": self.session.declarations(),
+                "declarations": declarations,
                 "scopes": [scope.to_dict() for scope in self.scopes.values()],
             }
             path = self._path(name)
@@ -773,7 +779,7 @@ class MathServer:
             staging = path.with_suffix(".json.tmp")
             staging.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             os.replace(staging, path)
-            return {"saved": name, "path": str(path), "scopes": sorted(self.scopes), "symbols": len(payload["declarations"])}
+            return {"saved": name, "path": str(path), "scopes": sorted(self.scopes), "symbols": len(declarations)}
 
         if action == "delete":
             path = self._path(str(args.get("name", "")))

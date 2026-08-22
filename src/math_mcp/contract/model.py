@@ -22,8 +22,9 @@ Design commitments, each of which is a trap avoided rather than a feature added:
 from __future__ import annotations
 
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 import sympy
 
@@ -602,17 +603,18 @@ def audit(scope: Scope, *, samples: int = 12, seed: int = 20260810, roots: Itera
         for other_name, other in sorted(scope.variables.items()):
             if name >= other_name:
                 continue
-            if name in other.aliases or other_name in variable.aliases:
-                if variable.units and other.units and variable.units != other.units:
-                    report.witnesses.append(
-                        Witness(
-                            "units",
-                            [],
-                            {},
-                            {name: variable.units, other_name: other.units},
-                            f"`{name}` and `{other_name}` are aliases but carry different units",
-                        )
+            if (name in other.aliases or other_name in variable.aliases) and (
+                variable.units and other.units and variable.units != other.units
+            ):
+                report.witnesses.append(
+                    Witness(
+                        "units",
+                        [],
+                        {},
+                        {name: variable.units, other_name: other.units},
+                        f"`{name}` and `{other_name}` are aliases but carry different units",
                     )
+                )
 
     # Tier 1b: dimensional analysis over the units the variables already carry, plus a parse
     # check on every claimed error term: an error term that does not parse bounds nothing.
@@ -656,16 +658,16 @@ def audit(scope: Scope, *, samples: int = 12, seed: int = 20260810, roots: Itera
             continue
         by_variable.setdefault(scope.canonical(defined), []).append(rid)
 
-    for variable, rids in sorted(by_variable.items()):
+    for variable_name, rids in sorted(by_variable.items()):
         if len(rids) < 2:
             continue
 
-        symbol = scope.session.symbol(variable)
+        symbol = scope.session.symbol(variable_name)
         for _ in range(samples):
             assignment = {
                 scope.session.symbol(name): sympy.Integer(rng.randint(1, 64))
                 for name in unknowns
-                if name != variable
+                if name != variable_name
             }
             solved: dict[str, Any] = {}
 

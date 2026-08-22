@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import random
 import signal
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
 
 import sympy
 

@@ -15,8 +15,8 @@ from typing import Any, Literal
 
 import sympy
 
-from .equivalence import TimeoutExceeded, deadline, _sample_domain
-from .session import MathError, Session, pretty
+from .equivalence import TimeoutExceeded, _sample_domain, deadline
+from .session import MathError, Session
 
 NumericOp = Literal["evalf", "root", "bounds", "convexity"]
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 import sympy
 
+from math_mcp.cas.session import MathError
 from math_mcp.contract.model import Formula, Scope, Variable, audit, find_orphans
 from math_mcp.contract.units import parse_units, unit_witnesses
-from math_mcp.cas.session import MathError
 
 
 def scope_with(*, variables: list[Variable], formulas: list[Formula]) -> Scope:

@@ -11,10 +11,11 @@ number.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import sympy
-import sympy.stats as stats
+from sympy import stats
 
 from .equivalence import TimeoutExceeded, deadline
 from .session import MathError, Session, pretty, render_expr

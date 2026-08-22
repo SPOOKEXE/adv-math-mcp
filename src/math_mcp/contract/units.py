@@ -52,7 +52,7 @@ def parse_units(text: str) -> sympy.Expr:
     return parsed.subs({symbol: sympy.Symbol(f"u_{symbol}", positive=True) for symbol in parsed.free_symbols})
 
 
-def unit_witnesses(scope: "Scope") -> list[dict[str, Any]]:
+def unit_witnesses(scope: Scope) -> list[dict[str, Any]]:
     """Dimensional findings across a scope's formulas, as plain dicts for ``audit`` to wrap.
 
     Each entry: ``{"formulas": [id], "values": {...}, "detail": str}``.
