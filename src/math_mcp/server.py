@@ -21,6 +21,7 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
+from dataclasses import replace
 
 from .cas.algebra import simplify as simplify_expr
 from .cas.algebra import solve as solve_kinds
@@ -37,6 +38,7 @@ from .cas.tensor import tensor_plan
 from .contract.model import (
     Assumption,
     ContractError,
+    Expression,
     Formula,
     Scope,
     Variable,
@@ -48,6 +50,7 @@ from .contract.model import (
     resolve,
 )
 from .layout import ROOT_ENV, resolve_root
+from .contract.export import explain, export_scope
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -358,11 +361,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "define",
-        "description": "Define a variable, formula or assumption. Unknown symbols auto-register as provisional.",
+        "description": "Define a variable, formula, assumption or expression. Unknown formula symbols auto-register as provisional.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "noun": {"type": "string", "enum": ["variable", "formula", "assumption"]},
+                "noun": {"type": "string", "enum": ["variable", "formula", "assumption", "expression"]},
                 "scope": {"type": "string"},
                 "body": {"type": "object"},
             },
@@ -371,11 +374,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "list",
-        "description": "List variables, formulas or assumptions, with filtering and a summary mode.",
+        "description": "List variables, formulas, assumptions or expressions, with filtering and a summary mode.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "noun": {"type": "string", "enum": ["variable", "formula", "assumption"]},
+                "noun": {"type": "string", "enum": ["variable", "formula", "assumption", "expression"]},
                 "scope": {"type": "string"},
                 "filter": {"type": "object"},
                 "mode": {"type": "string", "enum": ["summary", "full"]},
@@ -429,6 +432,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "explain",
+        "description": "Explain a formula or expression with metadata, variable notation and assumptions; no verification claim.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"noun": {"type": "string", "enum": ["formula", "expression"]}, "id": {"type": "string"}, "scope": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "export",
+        "description": "Export a scope or one item as LaTeX, DOT or dependency graph JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["latex", "dot", "json"]},
+                "noun": {"type": "string", "enum": ["variable", "formula", "expression"]},
+                "id": {"type": "string"},
+                "expr": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "impact",
         "description": "Downstream closure of a symbol, with staleness propagation. Also does assumption closure.",
         "inputSchema": {
@@ -440,6 +466,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "mark_stale": {"type": "boolean"},
                 "scope": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "rename",
+        "description": "Rename a variable, formula, assumption or expression in one scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "noun": {"type": "string", "enum": ["variable", "formula", "assumption", "expression"]},
+                "old_id": {"type": "string"},
+                "new_id": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+            "required": ["noun", "old_id", "new_id"],
         },
     },
 ]
@@ -641,6 +681,10 @@ class MathServer:
                     aliases=tuple(body.get("aliases", ())),
                     provenance=body.get("provenance", ""),
                     constraints=tuple(body.get("constraints", ())),
+                    symbol=body.get("symbol", ""),
+                    subscript=body.get("subscript", ""),
+                    superscript=body.get("superscript", ""),
+                    links=tuple(body.get("links", ())),
                 )
             )
             return {"defined": "variable", "variable": variable.to_dict()}
@@ -668,6 +712,67 @@ class MathServer:
             )
             return {"defined": "assumption", "assumption": assumption.to_dict()}
 
+        if noun == "expression":
+            expression = scope.define_expression(
+                Expression(
+                    id=body["id"],
+                    expression=body["expression"],
+                    description=body.get("description", ""),
+                )
+            )
+            return {"defined": "expression", "expression": expression.to_dict()}
+
+        raise ContractError(f"unknown noun `{noun}`")
+
+    def rename(self, args: dict[str, Any]) -> dict[str, Any]:
+        scope = self.scope(args.get("scope"))
+        noun = args["noun"]
+        old_id = args["old_id"]
+        new_id = str(args["new_id"])
+        if noun == "variable":
+            if old_id not in scope.variables and old_id not in scope._alias_index:
+                raise ContractError(f"unknown variable `{old_id}`")
+            canonical = scope.canonical(old_id)
+            variable = scope.variables[canonical]
+            if new_id in scope.variables or new_id in scope._alias_index:
+                raise ContractError(f"`{new_id}` is already in use")
+            aliases = tuple(dict.fromkeys((*variable.aliases, canonical, old_id)))
+            updated = replace(variable, name=new_id, aliases=aliases)
+            del scope.variables[canonical]
+            scope.define_variable(updated)
+            return {"renamed": {"old_id": old_id, "new_id": new_id, "variable": updated.to_dict()}}
+        if noun == "formula":
+            if old_id not in scope.formulas:
+                raise ContractError(f"unknown formula `{old_id}`")
+            if new_id in scope.formulas:
+                raise ContractError(f"`{new_id}` is already in use")
+            formula = scope.formulas[old_id].rename(new_id)
+            scope.formulas[new_id] = formula
+            del scope.formulas[old_id]
+            return {"renamed": {"old_id": old_id, "new_id": new_id, "formula": formula.to_dict()}}
+        if noun == "assumption":
+            if old_id not in scope.assumptions:
+                raise ContractError(f"unknown assumption `{old_id}`")
+            if new_id in scope.assumptions:
+                raise ContractError(f"`{new_id}` is already in use")
+            assumption = replace(scope.assumptions[old_id], id=new_id)
+            scope.assumptions[new_id] = assumption
+            del scope.assumptions[old_id]
+            for formula in tuple(scope.formulas.values()):
+                if old_id in formula.assumes:
+                    scope.formulas[formula.id] = replace(
+                        formula, assumes=tuple(new_id if name == old_id else name for name in formula.assumes)
+                    )
+            return {"renamed": {"old_id": old_id, "new_id": new_id, "assumption": assumption.to_dict()}}
+        if noun == "expression":
+            if old_id not in scope.expressions:
+                raise ContractError(f"unknown expression `{old_id}`")
+            if new_id in scope.expressions:
+                raise ContractError(f"`{new_id}` is already in use")
+            expression = replace(scope.expressions[old_id], id=new_id)
+            scope.expressions[new_id] = expression
+            del scope.expressions[old_id]
+            return {"renamed": {"old_id": old_id, "new_id": new_id, "expression": expression.to_dict()}}
         raise ContractError(f"unknown noun `{noun}`")
 
     def list(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -680,6 +785,7 @@ class MathServer:
             "variable": scope.variables,
             "formula": scope.formulas,
             "assumption": scope.assumptions,
+            "expression": scope.expressions,
         }
         source = sources[noun]
 
@@ -706,6 +812,12 @@ class MathServer:
             raise ContractError(f"scope `{name}` already exists")
         self.scopes[name] = scope.fork(name)
         return {"forked": name, "from": scope.name, "variables": len(self.scopes[name].variables)}
+
+    def export_(self, args: dict[str, Any]) -> dict[str, Any]:
+        return export_scope(self.scope(args.get("scope")), args)
+
+    def explain_(self, args: dict[str, Any]) -> dict[str, Any]:
+        return explain(self.scope(args.get("scope")), args)
 
     # -- environment ----------------------------------------------------------
 
@@ -859,7 +971,10 @@ class MathServer:
             "resolve": self.resolve,
             "fork": self.fork,
             "env": self.env,
+            "explain": self.explain_,
+            "export": self.export_,
             "impact": self.impact,
+            "rename": self.rename,
         }
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:

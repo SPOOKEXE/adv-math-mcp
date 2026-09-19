@@ -1,4 +1,4 @@
-"""The object model, and the six verbs that fall out of it.
+"""The object model for the contract tools.
 
 The layer that catches what the CAS structurally cannot see: ``B`` meaning sequences in one
 equation and tokens in another, a factor of 2 that only appears where two definitions meet, a
@@ -7,9 +7,8 @@ symbolic error — each formula is individually correct.
 
 Design commitments, each of which is a trap avoided rather than a feature added:
 
-* **Six verbs, parameterised noun.** Tool count is a context cost. ``define`` · ``list`` ·
-  ``audit`` · ``resolve`` · ``fork`` · ``impact``, not ``define-variable`` +
-  ``define-formula`` + ``define-assumption`` + …
+* **Parameterized nouns.** Tool count is a context cost. Use ``define`` and ``list``
+  across record types instead of one tool per record type.
 * **The registry rots if maintenance is tedious.** ``define`` on a formula auto-registers
   unknown symbols as *provisional* and infers what it can from usage. Demanding declaration
   first means the second formula never gets entered.
@@ -49,6 +48,10 @@ class Variable:
     aliases: tuple[str, ...] = ()
     provenance: str = ""
     constraints: tuple[str, ...] = ()
+    symbol: str = ""
+    subscript: str = ""
+    superscript: str = ""
+    links: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +64,10 @@ class Variable:
             "aliases": list(self.aliases),
             "provenance": self.provenance,
             "constraints": list(self.constraints),
+            "symbol": self.symbol,
+            "subscript": self.subscript,
+            "superscript": self.superscript,
+            "links": list(self.links),
         }
 
     @staticmethod
@@ -80,6 +87,10 @@ class Variable:
             aliases=tuple(str(alias) for alias in data.get("aliases", ())),
             provenance=str(data.get("provenance", "")),
             constraints=tuple(str(item) for item in data.get("constraints", ())),
+            symbol=str(data.get("symbol", "")),
+            subscript=str(data.get("subscript", "")),
+            superscript=str(data.get("superscript", "")),
+            links=tuple(str(item) for item in data.get("links", ())),
         )
 
 
@@ -118,6 +129,9 @@ class Formula:
         left = self.expression.split("=", 1)[0].strip()
         return left if left.replace("_", "").isalnum() and not left[0].isdigit() else None
 
+    def rename(self, new_id: str) -> Formula:
+        return replace(self, id=new_id)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -142,6 +156,20 @@ class Formula:
             assumes=tuple(str(item) for item in data.get("assumes", ())),
             error_term=str(data.get("error_term", "")),
         )
+
+
+@dataclass(frozen=True)
+class Expression:
+    id: str
+    expression: str
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "expression": self.expression, "description": self.description}
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> Expression:
+        return Expression(str(data["id"]), str(data["expression"]), str(data.get("description", "")))
 
 
 @dataclass(frozen=True)
@@ -184,6 +212,7 @@ class Scope:
         self.variables: dict[str, Variable] = {}
         self.formulas: dict[str, Formula] = {}
         self.assumptions: dict[str, Assumption] = {}
+        self.expressions: dict[str, Expression] = {}
         #: name or alias → canonical variable name
         self._alias_index: dict[str, str] = {}
 
@@ -288,6 +317,7 @@ class Scope:
             "variables": [variable.to_dict() for variable in self.variables.values()],
             "formulas": [formula.to_dict() for formula in self.formulas.values()],
             "assumptions": [assumption.to_dict() for assumption in self.assumptions.values()],
+            "expressions": [expression.to_dict() for expression in self.expressions.values()],
         }
 
     @staticmethod
@@ -306,6 +336,8 @@ class Scope:
             scope.define_assumption(Assumption.from_dict(record))
         for record in data.get("formulas", []):
             scope.define_formula(Formula.from_dict(record))
+        for record in data.get("expressions", []):
+            scope.define_expression(Expression.from_dict(record))
         return scope
 
     def fork(self, name: str) -> Scope:
@@ -319,10 +351,20 @@ class Scope:
         child.variables = dict(self.variables)
         child.formulas = dict(self.formulas)
         child.assumptions = dict(self.assumptions)
+        child.expressions = dict(self.expressions)
         child._alias_index = dict(self._alias_index)
         for variable in child.variables.values():
             child.define_variable(variable)
         return child
+
+    def define_expression(self, expression: Expression) -> Expression:
+        parsed = self._parse(expression.expression)
+        for symbol in parsed.free_symbols:
+            name = self.canonical(str(symbol))
+            if name not in self.variables:
+                self.define_variable(Variable(name=name, status="provisional", provenance=f"inferred from {expression.id}"))
+        self.expressions[expression.id] = expression
+        return expression
 
 
 @dataclass

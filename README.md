@@ -30,7 +30,7 @@ conditioning and structure), `numtheory`, `prob`, `eval` (evalf, root, empirical
 convexity).
 
 Contract: `define`, `list`, `audit` (shapes, units, orphans, numeric probes), `resolve`,
-`fork`, `impact`. Plus `env` to save and load whole environments.
+`fork`, `impact`, `rename`, `export` and `explain`. Plus `env` to save and load whole environments.
 
 `render: true` on the symbolic tools adds LaTeX output; `steps: true` on `solve` and `calc`
 adds checkpoint traces. Both are off by default so agent turns stay cheap.

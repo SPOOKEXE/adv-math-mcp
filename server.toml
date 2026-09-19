@@ -28,5 +28,8 @@ tools = [
    "resolve",
    "fork",
    "env",
+   "explain",
+   "export",
    "impact",
+   "rename",
 ]
